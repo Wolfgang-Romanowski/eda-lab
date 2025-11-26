@@ -35,15 +35,12 @@ export class EDAAppStack extends cdk.Stack {
       }
     });
 
-    const mailerQ = new sqs.Queue(this, "mailer-q", {
-      receiveMessageWaitTime: cdk.Duration.seconds(10),
-    });
-
     const imagesTable = new dynamodb.Table(this, "ImagesTable", {
       billingMode: dynamodb.BillingMode.PAY_PER_REQUEST,
       partitionKey: { name: "name", type: dynamodb.AttributeType.STRING },
       removalPolicy: cdk.RemovalPolicy.DESTROY,
       tableName: "Images",
+      stream: dynamodb.StreamViewType.NEW_IMAGE,
     });
 
     // SNS Topic
@@ -127,25 +124,6 @@ export class EDAAppStack extends cdk.Stack {
     );
 
     newImageTopic.addSubscription(
-      new subs.SqsSubscription(mailerQ, {
-        filterPolicyWithMessageBody: {
-          Records: sns.FilterOrPolicy.policy({
-            s3: sns.FilterOrPolicy.policy({
-              object: sns.FilterOrPolicy.policy({
-                key: sns.FilterOrPolicy.filter(
-                  sns.SubscriptionFilter.stringFilter({
-                    matchPrefixes: ["image"],
-                  })
-                ),
-              }),
-            }),
-          }),
-        },
-        rawMessageDelivery: true,
-      })
-    );
-
-    newImageTopic.addSubscription(
       new subs.LambdaSubscription(addMetadataFn, {
         filterPolicy: {
           metadata_type: sns.SubscriptionFilter.stringFilter({
@@ -161,19 +139,19 @@ export class EDAAppStack extends cdk.Stack {
       maxBatchingWindow: cdk.Duration.seconds(10),
     });
 
-    const newImageMailEventSource = new events.SqsEventSource(mailerQ, {
-      batchSize: 5,
-      maxBatchingWindow: cdk.Duration.seconds(5),
-    });
-
     const rejectedImageEventSource = new events.SqsEventSource(dlq, {
       batchSize: 5,
       maxBatchingWindow: cdk.Duration.seconds(10),
     });
 
     processImageFn.addEventSource(newImageEventSource);
-    mailerFn.addEventSource(newImageMailEventSource);
     rejectedImageFn.addEventSource(rejectedImageEventSource);
+
+    mailerFn.addEventSource(
+      new events.DynamoEventSource(imagesTable, {
+        startingPosition: lambda.StartingPosition.LATEST
+      })
+    );
 
     // Permissions
     imagesBucket.grantRead(processImageFn);
